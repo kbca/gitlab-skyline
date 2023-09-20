@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import datetime
 import math
+import json
 import subprocess
 from calendar import monthrange
 
@@ -11,11 +12,12 @@ import aiohttp
 from solid import *
 from solid.utils import *
 import os
+import requests
 
 __author__ = "Félix Gómez"
 
 
-async def get_contributions(semaphore, domain, username, token, date, contribution_matrix):
+async def get_contributions_gitlab(semaphore, domain, username, token, date, contribution_matrix):
     """Get contributions directly using Gitlab activities endpoint API (asynchronously)"""
 
     headers = {}
@@ -152,46 +154,67 @@ def generate_skyline_stl(username, year, contribution_matrix):
     subprocess.run(['openscad', '-o', scad_contributions_filename + '.stl', scad_contributions_filename + '.scad'],
                    capture_output=True)
 
-    print('Generated STL file ' + scad_contributions_filename +
-          '.stl')
-
+    print('Generated STL file ' + scad_contributions_filename +  '.stl')
 
 def main():
-    parser = argparse.ArgumentParser(prog="gitlab-skyline", description='Create STL from Gitlab contributions',
+    parser = argparse.ArgumentParser(prog="github-skyline", description='Create STL from Gitlab contributions',
                                      epilog='Enjoy!')
-    parser.add_argument('--domain', metavar=None, type=str, nargs="?", help='GitlabEE/CE custom domain',
-                        default='https://gitlab.com')
     parser.add_argument('username', metavar=None, type=str, help='Gitlab username (without @)')
     parser.add_argument('year', metavar=None, type=int,
                         help='Year of contributions to fetch', default=2020, nargs="?")
 
     parser.add_argument('--token', metavar=None, type=str, nargs="?", help='Personal access token',
                         default=None)
-    parser.add_argument('--max_requests', metavar=None, type=int,
-                        help='Max. simultaneous requests to Gitlab. Don\'t mess with their server!', default=10,
-                        nargs="?")
 
     args = parser.parse_args()
 
-    domain = args.domain
     username = args.username
     token = args.token
-    max_requests = args.max_requests
     year = args.year
     contribution_matrix = []
 
     print("Fetching contributions from Gitlab...")
 
-    semaphore = asyncio.Semaphore(max_requests)
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(
-        asyncio.wait(
-            [get_contributions(semaphore, domain, username, token, date, contribution_matrix) for date in
-             all_dates_in_year(year)]))
-    loop.close()
+
+    # contributions = [get_contributions(semaphore, domain, username, token, date, contribution_matrix) for date in all_dates_in_year(year)]
+
+    body = """
+        query {
+            user(login: "User-name-here") {
+                contributionsCollection {
+                    contributionCalendar {
+                        weeks {
+                            contributionDays {
+                                contributionCount,
+                                date
+                            }
+                        } 
+                    }
+                }
+            }
+        }
+    """
+    
+    response = requests.post(url="https://api.github.com/graphql", json={"query": body}, headers={"Authorization": f"Bearer {token}"})
+    contributions = json.loads(response.content)["data"]["user"]["contributionsCollection"]["contributionCalendar"]["weeks"]
+    
+    for week in contributions:
+        for contribution in week["contributionDays"]:
+            contribution_date = datetime.datetime.strptime(contribution["date"], "%Y-%m-%d")
+            
+            if contribution_date.year == 2022:
+                year = int(contribution_date.strftime('%j'))
+            else:
+                year = int(contribution_date.strftime('%j')) + 365
+            
+            contribution_matrix.append(
+                [year, int(contribution_date.strftime('%u')) - 1, contribution["contributionCount"]])
+            
+
+    print(contribution_matrix)
 
     print("Generating STL...")
-    generate_skyline_stl(username, year, contribution_matrix)
+    # generate_skyline_stl(username, year, contribution_matrix)
 
 
 if __name__ == '__main__':
